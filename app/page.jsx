@@ -10,6 +10,7 @@ const isNative = (fn) => {
   try { return /\[native code\]/.test(Function.prototype.toString.call(fn)); }
   catch { return false; }
 };
+const pick = (a) => a[Math.floor(Math.random() * a.length)];
 const stdev = (a) => {
   if (a.length < 2) return 0;
   const m = a.reduce((s, x) => s + x, 0) / a.length;
@@ -59,7 +60,7 @@ export default function Page() {
 
   useEffect(() => {
     const drop = () => {
-      if (phase === 'wait' || phase === 'go') { setFocusLost(true); foul('you looked away'); }
+      if (phase === 'wait' || phase === 'go') { setFocusLost(true); foul(pick(['you looked away', 'eyes on the pad', 'you left the room, so to speak'])); }
     };
     const vis = () => document.hidden && drop();
     window.addEventListener('blur', drop);
@@ -158,7 +159,7 @@ export default function Page() {
 
     if (phase === 'ready' || phase === 'shown') { if (trusted) arm(); return; }
     if (phase === 'foul') { if (trusted) setPhase('ready'); return; }
-    if (phase === 'wait') return foul('too soon!');
+    if (phase === 'wait') return foul(pick(['too soon!', 'jumped it', 'the green had not even arrived']));
     if (phase !== 'go') return;
 
     // Browser-stamped, on the performance timeline. Falls back only if the
@@ -167,9 +168,9 @@ export default function Page() {
     const nowP = performance.now();
     if (!ts || Math.abs(ts - nowP) > 5000) ts = nowP;
 
-    if (!greenAt.current) return foul('that was before the green');
+    if (!greenAt.current) return foul(pick(['that was before the green', 'you beat the paint to it', 'the pad had not lit yet']));
     const ms = +(ts - greenAt.current).toFixed(1);
-    if (!trusted) { round.current && sendFoul('robot tap'); setLast({ ms, note: 'nice try, robot' }); return setPhase('foul'); }
+    if (!trusted) { round.current && sendFoul('robot tap'); setLast({ ms, note: pick(['nice try, robot', 'that tap came from a script and we can tell', 'the browser grassed you up']) }); return setPhase('foul'); }
     submit(ms);
   };
 
@@ -345,7 +346,9 @@ function Board({ board }) {
           {rejected.map((b, i) => (
             <div key={i} style={{ padding: '0.6rem 0', borderBottom: '1px solid var(--line)' }}>
               <span className="struck">{b.player_name} — {Number(b.median_ms).toFixed(1)} ms</span>
-              <div className="small" style={{ color: 'var(--foul)' }}>{b.flags?.[0]}</div>
+              {(b.flags || []).map((f, j) => (
+                <div key={j} className="small" style={{ color: 'var(--foul)' }}>— {f}</div>
+              ))}
             </div>
           ))}
         </>

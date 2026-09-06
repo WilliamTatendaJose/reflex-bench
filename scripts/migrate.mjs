@@ -43,12 +43,61 @@ const client = new pg.Client({
 });
 await client.connect();
 
+/* "create table if not exists" skips a table that already carries the name,
+   whatever shape it is in. So a database that already owns a "sessions"
+   table silently keeps it, and the failure surfaces one statement later as
+   a foreign-key type mismatch against a table nobody meant to reference.
+   Presence is not compatibility — check the shape before touching anything. */
+const { rows: [found] } = await client.query(`
+  select
+    to_regclass('public.sessions')::text                       as qualified,
+    to_regclass('sessions')::text                              as unqualified,
+    (select a.atttypid::regtype::text
+       from pg_attribute a
+      where a.attrelid = to_regclass('public.sessions')
+        and a.attname = 'id' and a.attnum > 0)                 as id_type,
+    (select count(*)::int
+       from pg_attribute a
+      where a.attrelid = to_regclass('public.sessions')
+        and a.attnum > 0
+        and a.attname in ('player_name', 'ip_hash', 'median_ms')) as ours
+`);
+
+const bail = (lines) => {
+  lines.forEach((l) => console.error(l));
+  client.end();
+  process.exit(1);
+};
+
+if (found.qualified && found.id_type !== 'uuid') {
+  bail([
+    `public.sessions already exists in this database and is not ours.`,
+    `Its "id" column is ${found.id_type}; this schema needs uuid, so the`,
+    `rounds foreign key cannot be created against it.`,
+    '',
+    'Nothing has been changed. Point DATABASE_URL at a database of its own,',
+    'or rename/drop that table yourself if you are certain it is disposable.',
+    'To see what it is:  \\d public.sessions',
+  ]);
+}
+
+if (found.qualified && found.ours < 3) {
+  bail([
+    'public.sessions already exists with a uuid id, but it is missing columns',
+    'this app requires (player_name, ip_hash, median_ms).',
+    '',
+    'Nothing has been changed. Use a database of its own, or inspect it with:',
+    '  \\d public.sessions',
+  ]);
+}
+
+if (found.unqualified && found.unqualified !== 'sessions' && found.unqualified !== 'public.sessions') {
+  console.warn(`! note: unqualified "sessions" resolves to ${found.unqualified} on this`);
+  console.warn('! search_path. This schema pins everything to public explicitly.');
+}
+
 // schema.sql is entirely "if not exists", so re-running it is a no-op.
-// Look first only so the build log can say which of the two happened.
-const { rows: [{ present }] } = await client.query(
-  `select to_regclass('public.sessions') is not null as present`
-);
 await client.query(readFileSync(new URL('../db/schema.sql', import.meta.url), 'utf8'));
 await client.end();
 
-console.log(present ? 'Schema already present — verified.' : 'Schema created.');
+console.log(found.qualified ? 'Schema already present — verified.' : 'Schema created.');

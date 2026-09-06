@@ -1,6 +1,6 @@
 create extension if not exists pgcrypto;
 
-create table if not exists sessions (
+create table if not exists public.sessions (
   id            uuid primary key default gen_random_uuid(),
   player_name   text        not null,
   ip_hash       text        not null,
@@ -15,9 +15,9 @@ create table if not exists sessions (
   client_report jsonb       not null default '{}'::jsonb
 );
 
-create table if not exists rounds (
+create table if not exists public.rounds (
   id                uuid primary key default gen_random_uuid(),
-  session_id        uuid        not null references sessions(id) on delete cascade,
+  session_id        uuid        not null references public.sessions(id) on delete cascade,
   idx               int         not null,
   -- the delay is written only AFTER it has elapsed; it is never sent to the client
   delay_ms          int         not null,
@@ -32,6 +32,6 @@ create table if not exists rounds (
   unique (session_id, idx)
 );
 
-create index if not exists sessions_board_idx  on sessions (status, median_ms);
-create index if not exists sessions_rate_idx   on sessions (ip_hash, created_at desc);
-create index if not exists rounds_session_idx  on rounds (session_id, idx);
+create index if not exists sessions_board_idx  on public.sessions (status, median_ms);
+create index if not exists sessions_rate_idx   on public.sessions (ip_hash, created_at desc);
+create index if not exists rounds_session_idx  on public.rounds (session_id, idx);
