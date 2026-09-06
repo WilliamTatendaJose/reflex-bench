@@ -34,4 +34,9 @@ create table if not exists public.rounds (
 
 create index if not exists sessions_board_idx  on public.sessions (status, median_ms);
 create index if not exists sessions_rate_idx   on public.sessions (ip_hash, created_at desc);
+-- Whose fault a void was: 'network' (the wire was slow, nothing the player
+-- did) or 'player'. Added separately because "create table if not exists"
+-- will not add a column to a table that already exists.
+alter table public.rounds add column if not exists fault text;
+
 create index if not exists rounds_session_idx  on public.rounds (session_id, idx);

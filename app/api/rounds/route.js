@@ -28,22 +28,37 @@ export async function POST(req) {
   if (s.status !== 'open')
     return Response.json({ error: 'Session already closed.' }, { status: 409 });
 
+  /* Two counts, not one. `idx` has to keep numbering every round or the
+     unique(session_id, idx) constraint collides, but the attempt budget
+     only charges rounds the player is answerable for — a round the network
+     ate should not cost them one of their goes.
+
+     MAX_ATTEMPTS is the backstop: forgiving network voids without any
+     ceiling would let a client farm unlimited attempts by sitting on its
+     results until the wire check fires. */
   const { rows: [c] } = await q(
-    `select count(*)::int as n from rounds where session_id = $1`,
+    `select count(*)::int as total,
+            count(*) filter (where fault is distinct from 'network')::int as charged
+       from rounds where session_id = $1`,
     [sessionId]
   );
-  if (c.n >= L.MAX_ROUNDS)
+  if (c.charged >= L.MAX_ROUNDS || c.total >= L.MAX_ATTEMPTS)
     return Response.json({ error: 'Round limit reached for this session.' }, { status: 409 });
 
   const delay = L.DELAY_MIN + crypto.randomInt(L.DELAY_MAX - L.DELAY_MIN);
   await new Promise((r) => setTimeout(r, delay));
 
-  const goSentAt = Date.now();
+  /* Stamp AFTER the insert. Anything before this point — including however
+     long Postgres took to accept the row — is the bench's own latency, and
+     charging it to the player's wire budget is what made a remote database
+     eat into their allowance. The token carries the authoritative instant;
+     go_sent_at is corrected to match when the result lands. */
   const { rows: [r] } = await q(
     `insert into rounds (session_id, idx, delay_ms, go_sent_at)
-     values ($1, $2, $3, to_timestamp($4 / 1000.0)) returning id`,
-    [sessionId, c.n, delay, goSentAt]
+     values ($1, $2, $3, now()) returning id`,
+    [sessionId, c.total, delay]
   );
+  const goSentAt = Date.now();
 
   return Response.json(
     { roundId: r.id, goToken: mintGoToken(r.id, goSentAt) },

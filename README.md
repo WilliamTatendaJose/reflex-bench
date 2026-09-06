@@ -91,6 +91,14 @@ Two known soft spots, stated up front:
   not called fraud, which also means it will not catch a cheat shaving
   30ms. Tighten `L.WIRE_SLACK` in `lib/checks.js` if your users are all on
   good connections, and watch the false-reject rate.
+
+  A round voided this way is recorded as `fault = 'network'` and is held
+  against nobody: it is not counted as a false start when the session is
+  scored, and it does not spend one of the player's `MAX_ROUNDS` attempts.
+  `MAX_ATTEMPTS` is the ceiling that stops a client farming attempts by
+  tripping the wire check on purpose. Before tuning the slack, check where
+  the function and the database are running — the round trip to a Postgres
+  in another region comes out of the same budget.
 - **Session retries are unlimited by name.** Rate limiting is per IP hash,
   25 sessions/hour. Someone patient can fish for a good median the same way
   an honest player can. That is a fairness choice, not an oversight.

@@ -25,10 +25,10 @@ export async function POST(req, { params }) {
   // reading to check. Record it as void and move on.
   if (body.foul) {
     const { rowCount } = await q(
-      `update rounds set status='void', note=$2, result_at=now(),
-              server_elapsed_ms=$3
+      `update rounds set status='void', fault='player', note=$2, result_at=now(),
+              server_elapsed_ms=$3, go_sent_at=to_timestamp($4 / 1000.0)
          where id = $1 and status='pending'`,
-      [id, String(body.foul).slice(0, 40), serverElapsedMs]
+      [id, String(body.foul).slice(0, 40), serverElapsedMs, token.goSentAtMs]
     );
     if (!rowCount) return Response.json({ error: 'Round already settled.' }, { status: 409 });
     return Response.json({ status: 'void', note: 'jumped the gun' });
@@ -41,19 +41,22 @@ export async function POST(req, { params }) {
   const { rowCount } = await q(
     `update rounds
         set status=$2, note=$3, reported_ms=$4,
-            server_elapsed_ms=$5, result_at=now()
+            server_elapsed_ms=$5, result_at=now(), fault=$6,
+            go_sent_at=to_timestamp($7 / 1000.0)
       where id=$1 and status='pending'`,
-    [id, verdict.status, verdict.note, Number.isFinite(reportedMs) ? reportedMs : null, serverElapsedMs]
+    [id, verdict.status, verdict.note, Number.isFinite(reportedMs) ? reportedMs : null,
+     serverElapsedMs, verdict.fault, token.goSentAtMs]
   );
   if (!rowCount)
     return Response.json({ error: 'Round already settled.' }, { status: 409 });
 
   const { rows: [c] } = await q(
     `select count(*) filter (where status='valid')::int as valid,
-            count(*) filter (where status='void')::int  as void
+            count(*) filter (where status='void' and fault is distinct from 'network')::int as void,
+            count(*) filter (where fault = 'network')::int as lost
        from rounds where session_id = (select session_id from rounds where id=$1)`,
     [id]
   );
 
-  return Response.json({ ...verdict, ms: reportedMs, valid: c.valid, void: c.void });
+  return Response.json({ ...verdict, ms: reportedMs, valid: c.valid, void: c.void, lost: c.lost });
 }

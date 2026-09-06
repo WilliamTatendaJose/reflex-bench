@@ -24,11 +24,17 @@ export async function POST(req, { params }) {
     return Response.json({ error: 'Session already scored.' }, { status: 409 });
 
   const { rows } = await q(
-    `select reported_ms, status from rounds where session_id=$1 order by idx`,
+    `select reported_ms, status, fault from rounds where session_id=$1 order by idx`,
     [id]
   );
   const times = rows.filter((r) => r.status === 'valid').map((r) => Number(r.reported_ms));
-  const voids = rows.filter((r) => r.status === 'void').length;
+
+  /* Rounds the network ate are not the player's doing, so they are not
+     counted as false starts. Without this split, five good rounds plus nine
+     rounds lost to a bad connection scored as "more false starts than
+     starts" and put an honest player on the wall of shame. */
+  const voids = rows.filter((r) => r.status === 'void' && r.fault !== 'network').length;
+  const lost = rows.filter((r) => r.fault === 'network').length;
 
   if (times.length < L.ROUNDS)
     return Response.json({ error: 'Session not finished.' }, { status: 400 });
@@ -50,7 +56,7 @@ export async function POST(req, { params }) {
   );
 
   return Response.json({
-    status, flags,
+    status, flags, lost,
     median: +med.toFixed(1),
     best: +best.toFixed(1),
     sd: +sd.toFixed(1),

@@ -68,6 +68,7 @@ export default function Page() {
   const [sessionId, setSessionId] = useState(null);
   const [times, setTimes] = useState([]);
   const [voids, setVoids] = useState(0);
+  const [lost, setLost] = useState(0);   // rounds the connection ate, not held against you
   const [last, setLast] = useState(null);
   const [cert, setCert] = useState(null);
   const [error, setError] = useState(null);
@@ -187,7 +188,10 @@ export default function Page() {
     const d = await r.json();
 
     if (d.status !== 'valid') {
-      setVoids((v) => v + 1);
+      // A round the wire ate is not a false start, and the readout should
+      // not imply it was.
+      if (d.fault === 'network') setLost((n) => n + 1);
+      else setVoids((v) => v + 1);
       setLast({ ms, note: d.note || d.error || 'rejected' });
       return setPhase('foul');
     }
@@ -233,7 +237,7 @@ export default function Page() {
   };
 
   const wipe = () => {
-    setTimes([]); setVoids(0); setCert(null); setLast(null);
+    setTimes([]); setVoids(0); setLost(0); setCert(null); setLast(null);
     setSynthetic(false); setFocusLost(false); setSessionId(null); setCheatPresses(0);
   };
 
@@ -346,7 +350,7 @@ export default function Page() {
           {phase === 'done' && cert && <Cert cert={cert} onAgain={again} />}
 
           <Integrity
-            times={times} voids={voids}
+            times={times} voids={voids} lost={lost}
             synthetic={synthetic} patchedTimer={patchedTimer} focusLost={focusLost}
           />
 
@@ -360,7 +364,7 @@ export default function Page() {
   );
 }
 
-function Integrity({ times, voids, synthetic, patchedTimer, focusLost }) {
+function Integrity({ times, voids, lost, synthetic, patchedTimer, focusLost }) {
   const sd = times.length >= 2 ? stdev(times) : null;
   const rows = [
     ['the green', 'unguessable', true],
@@ -369,6 +373,8 @@ function Integrity({ times, voids, synthetic, patchedTimer, focusLost }) {
     ['attention', focusLost ? 'wandered off' : 'on the pad', !focusLost],
     ['human wobble', sd == null ? '—' : `${sd.toFixed(1)} ms`, sd == null || sd >= SD_FLOOR],
     ['itchy taps', String(voids), voids <= 8],
+    // Only worth a line when it has actually happened to you.
+    ...(lost > 0 ? [['eaten by the wire', `${lost} — not counted`, true]] : []),
   ];
   return (
     <div className="panel">
@@ -421,6 +427,11 @@ function Cert({ cert, onAgain }) {
       {cert.flags?.map((f) => (
         <div key={f} className="small" style={{ marginTop: '0.5rem', color: 'var(--foul)' }}>— {f}</div>
       ))}
+      {cert.lost > 0 && (
+        <div className="dim small" style={{ marginTop: '0.5rem' }}>
+          {cert.lost} {cert.lost === 1 ? 'round' : 'rounds'} lost to the connection, and not held against you.
+        </div>
+      )}
       <button className="primary" style={{ marginTop: '1rem' }} onClick={onAgain}>
         Go again
       </button>
