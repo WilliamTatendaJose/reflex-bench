@@ -9,6 +9,7 @@
     "db:push": "node --env-file-if-exists=.env.local scripts/migrate.mjs"
   },
   "dependencies": {
+    "@vercel/analytics": "^2.0.1",
     "next": "15.5.25",
     "pg": "^8.13.1",
     "react": "^19.0.0",
