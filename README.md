@@ -10,14 +10,20 @@ checked on the server before it reaches the board.
 npm install
 cp .env.example .env.local     # fill in DATABASE_URL and SIGNING_SECRET
 openssl rand -hex 32           # -> SIGNING_SECRET
-npm run db:push                # applies db/schema.sql
+npm run db:push                # applies db/schema.sql (also runs on build)
 npm run dev
 ```
 
 For Vercel: push to a repo, import it, set `DATABASE_URL` and
 `SIGNING_SECRET` as environment variables, deploy. Any Postgres works —
-Neon, Supabase, or your own instance. Run `npm run db:push` once against
-the production URL.
+Neon, Supabase, or your own instance.
+
+The build runs `db:push` first, so the schema is applied on the first
+deploy and verified on every one after — `db/schema.sql` is entirely
+`if not exists`, so re-running it is a no-op. A build with no
+`DATABASE_URL` warns and carries on; a build with a malformed one stops
+and says why, rather than leaving you to find out from a runtime
+`ENOTFOUND`.
 
 Note the round endpoint holds a request open for up to 4.3 seconds
 (`maxDuration = 15`). That is inside the Hobby plan's limit, but it does

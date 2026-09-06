@@ -4,9 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "npm run db:push && next build",
     "start": "next start",
-    "db:push": "node scripts/migrate.mjs"
+    "db:push": "node --env-file-if-exists=.env.local scripts/migrate.mjs"
   },
   "dependencies": {
     "next": "15.5.25",

@@ -59,7 +59,7 @@ export default function Page() {
 
   useEffect(() => {
     const drop = () => {
-      if (phase === 'wait' || phase === 'go') { setFocusLost(true); foul('window lost focus'); }
+      if (phase === 'wait' || phase === 'go') { setFocusLost(true); foul('you looked away'); }
     };
     const vis = () => document.hidden && drop();
     window.addEventListener('blur', drop);
@@ -96,7 +96,7 @@ export default function Page() {
       if (aborted.current) return sendFoul(aborted.current);
       setPhase('go');
     } catch {
-      setError('Lost the connection to the bench.');
+      setError('Lost the bench. Have another go.');
       setPhase('error');
     }
   };
@@ -158,7 +158,7 @@ export default function Page() {
 
     if (phase === 'ready' || phase === 'shown') { if (trusted) arm(); return; }
     if (phase === 'foul') { if (trusted) setPhase('ready'); return; }
-    if (phase === 'wait') return foul('jumped the gun');
+    if (phase === 'wait') return foul('too soon!');
     if (phase !== 'go') return;
 
     // Browser-stamped, on the performance timeline. Falls back only if the
@@ -167,9 +167,9 @@ export default function Page() {
     const nowP = performance.now();
     if (!ts || Math.abs(ts - nowP) > 5000) ts = nowP;
 
-    if (!greenAt.current) return foul('tap preceded the paint');
+    if (!greenAt.current) return foul('that was before the green');
     const ms = +(ts - greenAt.current).toFixed(1);
-    if (!trusted) { round.current && sendFoul('synthetic input'); setLast({ ms, note: 'synthetic input rejected' }); return setPhase('foul'); }
+    if (!trusted) { round.current && sendFoul('robot tap'); setLast({ ms, note: 'nice try, robot' }); return setPhase('foul'); }
     submit(ms);
   };
 
@@ -188,45 +188,46 @@ export default function Page() {
     return (
       <main className="wrap" style={{ paddingTop: '4rem' }}>
         <div className="mark">reflex bench</div>
-        <h1>Five rounds. The median counts.</h1>
+        <h1>Five rounds. Median wins.</h1>
         <p className="dim">
-          The wait before green is chosen on the server and never sent here,
-          so it cannot be timed against. Nobody scores 1ms, because 1ms is
-          not a reaction — it is an injection.
+          Two ways to play. Be genuinely quick, or convince the bench that
+          you are. Fastest honest thumbs take the top of the board. Everyone
+          caught trying it on lands in the wall of shame just underneath,
+          which is every bit as public.
         </p>
         <div style={{ marginTop: '2rem' }}>
           <input
             value={name}
             maxLength={16}
-            placeholder="Your name for the board"
+            placeholder="Your name — for either list"
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && name.trim() && start()}
           />
           <button className="primary" style={{ marginTop: '0.75rem' }}
             disabled={!name.trim()} onClick={start}>
-            Start the session
+            Go on then
           </button>
         </div>
         {error && <p className="small" style={{ color: 'var(--foul)' }}>{error}</p>}
-        <p className="dim small">Verified scores are public. So are the rejected ones.</p>
+        <p className="dim small">Nobody has ever scored 1ms. Not for want of trying.</p>
       </main>
     );
   }
 
   const padText =
-    phase === 'go' ? 'NOW' :
-    phase === 'wait' ? 'wait' :
+    phase === 'go' ? 'NOW!' :
+    phase === 'wait' ? 'wait for it…' :
     phase === 'foul' ? (last?.note || 'void') :
     phase === 'shown' ? `${last.ms.toFixed(1)} ms` :
-    phase === 'done' ? 'session complete' :
-    phase === 'error' ? (error || 'bench error') : 'tap to arm';
+    phase === 'done' ? "that's your five" :
+    phase === 'error' ? (error || 'the bench fell over') : 'tap when you are ready';
 
   return (
     <main className="wrap">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
         <span className="mark">reflex bench</span>
         <button className="linkish" onClick={() => setShowBoard((s) => !s)}>
-          {showBoard ? 'back to the bench' : 'leaderboard'}
+          {showBoard ? 'back to the pad' : 'leaderboard'}
         </button>
       </div>
 
@@ -245,7 +246,7 @@ export default function Page() {
               <div className="small" style={{ marginTop: '0.5rem', color: 'var(--brass)' }}>{last.note}</div>
             )}
             {(phase === 'shown' || phase === 'foul') && (
-              <div className="small" style={{ marginTop: '0.75rem', opacity: 0.75 }}>tap to continue</div>
+              <div className="small" style={{ marginTop: '0.75rem', opacity: 0.75 }}>tap to carry on</div>
             )}
           </div>
 
@@ -268,7 +269,7 @@ export default function Page() {
           />
 
           <button className="ghost" style={{ marginTop: '1rem' }} onClick={fakeTap}>
-            Try to cheat — fire a scripted tap
+            Cheat button. Go on, we dare you.
           </button>
         </>
       )}
@@ -279,12 +280,12 @@ export default function Page() {
 function Integrity({ times, voids, synthetic, patchedTimer, focusLost }) {
   const sd = times.length >= 2 ? stdev(times) : null;
   const rows = [
-    ['go signal', 'server-timed', true],
-    ['input', synthetic ? 'scripted taps seen' : 'hardware', !synthetic],
-    ['timing API', patchedTimer ? 'patched' : 'native', !patchedTimer],
-    ['focus', focusLost ? 'lost mid-round' : 'held', !focusLost],
-    ['spread', sd == null ? '—' : `${sd.toFixed(1)} ms`, sd == null || sd >= SD_FLOOR],
-    ['false starts', String(voids), voids <= 8],
+    ['the green', 'unguessable', true],
+    ['fingers', synthetic ? 'suspiciously robotic' : 'real ones', !synthetic],
+    ['clocks', patchedTimer ? 'bent' : 'straight', !patchedTimer],
+    ['attention', focusLost ? 'wandered off' : 'on the pad', !focusLost],
+    ['human wobble', sd == null ? '—' : `${sd.toFixed(1)} ms`, sd == null || sd >= SD_FLOOR],
+    ['itchy taps', String(voids), voids <= 8],
   ];
   return (
     <div className="panel">
@@ -308,26 +309,26 @@ function Cert({ cert, onAgain }) {
           <div className="big">{cert.median.toFixed(1)}<span className="unit"> ms</span></div>
         </div>
         <div className="small" style={{ fontFamily: 'var(--mono)', color: clean ? 'var(--go)' : 'var(--foul)' }}>
-          {clean ? 'verified' : 'not verified'}
+          {clean ? 'legit' : 'busted'}
         </div>
       </div>
       {cert.flags?.map((f) => (
         <div key={f} className="small" style={{ marginTop: '0.5rem', color: 'var(--foul)' }}>— {f}</div>
       ))}
       <button className="primary" style={{ marginTop: '1rem' }} onClick={onAgain}>
-        Run another session
+        Go again
       </button>
     </div>
   );
 }
 
 function Board({ board }) {
-  if (!board) return <p className="dim">Loading the register…</p>;
-  if (board.down) return <p style={{ color: 'var(--foul)' }}>The board is unreachable right now.</p>;
+  if (!board) return <p className="dim">Fetching the scores…</p>;
+  if (board.down) return <p style={{ color: 'var(--foul)' }}>The board is having a lie down.</p>;
   const { verified = [], rejected = [] } = board;
   return (
     <div style={{ marginTop: '1rem' }}>
-      {verified.length === 0 && <p className="dim">No verified sessions yet. Be the first.</p>}
+      {verified.length === 0 && <p className="dim">No clean runs yet. Open goal.</p>}
       {verified.map((b, i) => (
         <div className="entry" key={i}>
           <span className="rank">{i + 1}</span>
@@ -339,7 +340,7 @@ function Board({ board }) {
       {rejected.length > 0 && (
         <>
           <div className="small" style={{ marginTop: '1.5rem', color: 'var(--foul)' }}>
-            Rejected — left visible on purpose
+            Wall of shame — nobody gets quietly deleted
           </div>
           {rejected.map((b, i) => (
             <div key={i} style={{ padding: '0.6rem 0', borderBottom: '1px solid var(--line)' }}>
