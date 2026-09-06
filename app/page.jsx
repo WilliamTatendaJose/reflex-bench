@@ -12,6 +12,25 @@ const isNative = (fn) => {
 };
 const pick = (a) => a[Math.floor(Math.random() * a.length)];
 
+/* Remember who is playing, so finishing five rounds does not send you back
+   to a form to retype your own name. Not a credential — just a label for
+   the board — so it is readable by the page and carries no other weight. */
+const NAME_COOKIE = 'rb_name';
+const readName = () => {
+  if (typeof document === 'undefined') return '';
+  const m = document.cookie.match(/(?:^|; )rb_name=([^;]*)/);
+  try { return m ? decodeURIComponent(m[1]).slice(0, 16) : ''; } catch { return ''; }
+};
+const rememberName = (v) => {
+  if (typeof document === 'undefined') return;
+  const secure = location.protocol === 'https:' ? '; secure' : '';
+  document.cookie = `${NAME_COOKIE}=${encodeURIComponent(v)}; path=/; max-age=31536000; samesite=lax${secure}`;
+};
+const forgetName = () => {
+  if (typeof document === 'undefined') return;
+  document.cookie = `${NAME_COOKIE}=; path=/; max-age=0; samesite=lax`;
+};
+
 /* The cheat button is the one joke a player can repeat on purpose, so it
    answers differently each time and eventually stops playing along. The
    session was already flagged on the first press — that is the point of
@@ -69,7 +88,7 @@ export default function Page() {
   const aborted = useRef(false);
   const pad = useRef(null);
 
-  useEffect(() => { loadBoard(); }, []);
+  useEffect(() => { loadBoard(); const n = readName(); if (n) setName(n); }, []);
   const loadBoard = async () => {
     try { setBoard(await (await fetch('/api/leaderboard')).json()); }
     catch { setBoard({ verified: [], rejected: [], down: true }); }
@@ -95,16 +114,28 @@ export default function Page() {
     return () => { window.removeEventListener('blur', drop); document.removeEventListener('visibilitychange', vis); };
   }, [phase]);
 
-  const start = async () => {
+  /* Takes the name explicitly because `again` starts a session from the
+     remembered value before React has flushed it into state. Returns
+     whether it worked, so the caller can decide where to land. */
+  const start = async (who = name) => {
     setError(null);
-    const r = await fetch('/api/session', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
-    });
-    const d = await r.json();
-    if (!r.ok) return setError(d.error);
-    setSessionId(d.sessionId);
-    setPhase('ready');
+    const trimmed = String(who).trim().slice(0, 16);
+    if (!trimmed) return false;
+    try {
+      const r = await fetch('/api/session', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: trimmed }),
+      });
+      const d = await r.json();
+      if (!r.ok) { setError(d.error); return false; }
+      rememberName(trimmed);
+      setSessionId(d.sessionId);
+      setPhase('ready');
+      return true;
+    } catch {
+      setError('Lost the bench. Have another go.');
+      return false;
+    }
   };
 
   /* Ask for a round. The server does not answer until green is due, so
@@ -201,9 +232,27 @@ export default function Page() {
     submit(ms);
   };
 
-  const again = () => {
+  const wipe = () => {
     setTimes([]); setVoids(0); setCert(null); setLast(null);
     setSynthetic(false); setFocusLost(false); setSessionId(null); setCheatPresses(0);
+  };
+
+  /* Five rounds done should not mean filling in a form again. If we know
+     who you are, go straight into the next session; only fall back to the
+     name screen when we do not, or when opening one failed — the error has
+     nowhere else to render. */
+  const again = async () => {
+    wipe();
+    const remembered = (name || readName()).trim();
+    if (!remembered) return setPhase('name');
+    setName(remembered);
+    if (!(await start(remembered))) setPhase('name');
+  };
+
+  const changePlayer = () => {
+    forgetName();
+    wipe();
+    setName('');
     setPhase('name');
   };
 
@@ -232,7 +281,7 @@ export default function Page() {
             onKeyDown={(e) => e.key === 'Enter' && name.trim() && start()}
           />
           <button className="primary" style={{ marginTop: '0.75rem' }}
-            disabled={!name.trim()} onClick={start}>
+            disabled={!name.trim()} onClick={() => start()}>
             Go on then
           </button>
         </div>
@@ -254,9 +303,14 @@ export default function Page() {
     <main className="wrap">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
         <span className="mark">reflex bench</span>
-        <button className="linkish" onClick={() => setShowBoard((s) => !s)}>
-          {showBoard ? 'back to the pad' : 'leaderboard'}
-        </button>
+        <span style={{ display: 'flex', gap: '1rem', alignItems: 'baseline' }}>
+          {name && (
+            <button className="linkish" onClick={changePlayer}>not {name}?</button>
+          )}
+          <button className="linkish" onClick={() => setShowBoard((s) => !s)}>
+            {showBoard ? 'back to the pad' : 'leaderboard'}
+          </button>
+        </span>
       </div>
 
       {showBoard ? <Board board={board} /> : (
