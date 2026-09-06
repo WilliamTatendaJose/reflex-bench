@@ -4,7 +4,6 @@ import { useState, useEffect, useLayoutEffect, useRef } from 'react';
 
 const ROUNDS = 5;
 const SUSPECT = 130;
-const SD_FLOOR = 8;
 
 const isNative = (fn) => {
   try { return /\[native code\]/.test(Function.prototype.toString.call(fn)); }
@@ -46,16 +45,6 @@ const CHEAT_LABELS = [
   'One more and I stop humouring you.',
 ];
 const CHEAT_RETIRED = 'Cheat button (retired, on grounds of persistence)';
-const ROBOT_NOTES = [
-  'nice try, robot',
-  'that one was a script as well',
-  'we can tell. every time.',
-  'we can do this all day',
-  'you are only making the list longer',
-  'the flag went up several taps ago',
-  'yes. still a script.',
-  'that is quite enough of that',
-];
 const stdev = (a) => {
   if (a.length < 2) return 0;
   const m = a.reduce((s, x) => s + x, 0) / a.length;
@@ -63,7 +52,7 @@ const stdev = (a) => {
 };
 
 export default function Page() {
-  const [phase, setPhase] = useState('name'); // name|ready|wait|go|shown|foul|done|error
+  const [phase, setPhase] = useState('name'); // name|ready|wait|go|settling|submitting|shown|foul|done|error
   const [name, setName] = useState('');
   const [sessionId, setSessionId] = useState(null);
   const [times, setTimes] = useState([]);
@@ -84,6 +73,9 @@ export default function Page() {
             isNative(EventTarget.prototype.dispatchEvent))
   );
 
+  const operation = useRef(false);
+  const generation = useRef(0);
+  const retry = useRef(null);
   const greenAt = useRef(0);
   const round = useRef(null);
   const aborted = useRef(false);
@@ -91,15 +83,14 @@ export default function Page() {
 
   useEffect(() => { loadBoard(); const n = readName(); if (n) setName(n); }, []);
   const loadBoard = async () => {
-    try { setBoard(await (await fetch('/api/leaderboard')).json()); }
+    try { const r = await fetch('/api/leaderboard'); if (!r.ok) throw new Error(); setBoard(await r.json()); }
     catch { setBoard({ verified: [], rejected: [], down: true }); }
   };
 
-  /* The timestamp that matters. This rAF is scheduled during the commit
-     that turns the pad green, so it fires at the start of the frame after
-     the green is actually on screen — not when state was set. */
+  /* rAF approximates the presentation frame; browsers do not expose the
+     exact instant the display emits the green pixels. */
   useLayoutEffect(() => {
-    if (phase !== 'go') return;
+    if (phase !== 'go' || operation.current || !round.current) return;
     greenAt.current = 0;
     const id = requestAnimationFrame((t) => { greenAt.current = t; });
     return () => cancelAnimationFrame(id);
@@ -115,114 +106,142 @@ export default function Page() {
     return () => { window.removeEventListener('blur', drop); document.removeEventListener('visibilitychange', vis); };
   }, [phase]);
 
-  /* Takes the name explicitly because `again` starts a session from the
-     remembered value before React has flushed it into state. Returns
-     whether it worked, so the caller can decide where to land. */
+  const post = async (url, body) => {
+    const r = await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body), signal: AbortSignal.timeout(15000),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'The request failed. Try again.');
+    return data;
+  };
+
   const start = async (who = name) => {
-    setError(null);
+    if (operation.current) return false;
     const trimmed = String(who).trim().slice(0, 16);
     if (!trimmed) return false;
+    operation.current = true;
+    const version = generation.current;
+    setError(null);
     try {
-      const r = await fetch('/api/session', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: trimmed }),
-      });
-      const d = await r.json();
-      if (!r.ok) { setError(d.error); return false; }
+      const d = await post('/api/session', { name: trimmed });
+      if (version !== generation.current) return false;
       rememberName(trimmed);
       setSessionId(d.sessionId);
       setPhase('ready');
       return true;
-    } catch {
-      setError('Lost the bench. Have another go.');
+    } catch (e) {
+      if (version === generation.current) setError(e.message || 'Lost the bench. Try again.');
       return false;
+    } finally {
+      if (version === generation.current) operation.current = false;
     }
   };
 
-  /* Ask for a round. The server does not answer until green is due, so
-     the moment cannot be pre-computed on this side. */
+  // One synchronous lock covers each request; generations discard responses
+  // from a session that the player has left. Retries retain the original payload.
+  const settle = async (rd, payload) => {
+    if (operation.current) return;
+    operation.current = true;
+    setPhase('submitting');
+    setError(null);
+    const version = generation.current;
+    retry.current = () => settle(rd, payload);
+    try {
+      const d = await post(`/api/rounds/${rd.roundId}/result`, { goToken: rd.goToken, ...payload });
+      if (version !== generation.current) return;
+      retry.current = null;
+      round.current = null;
+      operation.current = false;
+      if (d.status !== 'valid') {
+        if (d.fault === 'network') setLost((n) => n + 1);
+        else setVoids((n) => n + 1);
+        setLast({ ms: d.ms, note: d.note || 'Round not counted.' });
+        setPhase('foul');
+        return;
+      }
+      const next = [...times, d.ms];
+      setTimes(next);
+      setLast({ ms: d.ms, note: d.note });
+      if (next.length >= ROUNDS) await finish();
+      else setPhase('shown');
+    } catch (e) {
+      if (version === generation.current) {
+        setError(e.message || 'Connection lost. Retry saving this round.');
+        setPhase('error');
+      }
+    } finally {
+      if (version === generation.current) operation.current = false;
+    }
+  };
+
   const arm = async () => {
+    if (operation.current) return;
+    operation.current = true;
     aborted.current = false;
     round.current = null;
+    retry.current = null;
     setPhase('wait');
+    const version = generation.current;
     try {
-      const r = await fetch('/api/rounds', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId }),
-      });
-      const d = await r.json();
-      if (!r.ok) { setError(d.error); return setPhase('error'); }
+      const d = await post('/api/rounds', { sessionId });
+      if (version !== generation.current) return;
       round.current = d;
-      if (aborted.current) return sendFoul(aborted.current);
+      operation.current = false;
+      if (aborted.current) return settle(d, { foul: aborted.current });
       setPhase('go');
-    } catch {
-      setError('Lost the bench. Have another go.');
-      setPhase('error');
+    } catch (e) {
+      if (version === generation.current) {
+        setError(`${e.message} Start a new session if the round could not be opened.`);
+        setPhase('error');
+        operation.current = false;
+      }
     }
-  };
-
-  const sendFoul = async (note) => {
-    const rd = round.current;
-    if (!rd) return;
-    round.current = null;
-    await fetch(`/api/rounds/${rd.roundId}/result`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ goToken: rd.goToken, foul: note }),
-    }).catch(() => {});
-    setVoids((v) => v + 1);
   };
 
   const foul = (note) => {
+    if (aborted.current || phase === 'submitting') return;
+    aborted.current = note;
     setLast({ ms: null, note });
-    setPhase('foul');
-    if (round.current) sendFoul(note); else aborted.current = note;
-  };
-
-  const submit = async (ms) => {
-    const rd = round.current;
-    round.current = null;
-    const r = await fetch(`/api/rounds/${rd.roundId}/result`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ goToken: rd.goToken, reportedMs: ms }),
-    });
-    const d = await r.json();
-
-    if (d.status !== 'valid') {
-      // A round the wire ate is not a false start, and the readout should
-      // not imply it was.
-      if (d.fault === 'network') setLost((n) => n + 1);
-      else setVoids((v) => v + 1);
-      setLast({ ms, note: d.note || d.error || 'rejected' });
-      return setPhase('foul');
-    }
-    const next = [...times, ms];
-    setTimes(next);
-    setLast({ ms, note: d.note });
-    setPhase('shown');
-    if (next.length >= ROUNDS) finish();
+    if (round.current) settle(round.current, { foul: note });
+    else setPhase('settling'); // keep retries locked until the held request returns
   };
 
   const finish = async () => {
-    const r = await fetch(`/api/session/${sessionId}/finish`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ synthetic, patchedTimer, focusLost }),
-    });
-    const d = await r.json();
-    if (!r.ok) { setError(d.error); return setPhase('error'); }
-    setCert(d);
-    setPhase('done');
-    loadBoard();
+    if (operation.current) return;
+    operation.current = true;
+    const version = generation.current;
+    setPhase('submitting');
+    setError(null);
+    retry.current = finish;
+    try {
+      const d = await post(`/api/session/${sessionId}/finish`, { synthetic, patchedTimer, focusLost });
+      if (version !== generation.current) return;
+      retry.current = null;
+      setCert(d);
+      setPhase('done');
+      loadBoard();
+    } catch (e) {
+      if (version === generation.current) {
+        setError(e.message || 'Connection lost. Retry saving your session.');
+        setPhase('error');
+      }
+    } finally {
+      if (version === generation.current) operation.current = false;
+    }
   };
 
   const tap = (e) => {
+    if (e.repeat) return;
+    if (e.type === 'keydown') e.preventDefault();
     const ne = e.nativeEvent || e;
     const trusted = ne.isTrusted === true;
     if (!trusted) { setSynthetic(true); setCheatPresses((n) => n + 1); }
 
-    if (phase === 'ready' || phase === 'shown') { if (trusted) arm(); return; }
+    if (phase === 'ready' || phase === 'shown') { if (trusted && !operation.current) arm(); return; }
     if (phase === 'foul') { if (trusted) setPhase('ready'); return; }
     if (phase === 'wait') return foul(pick(['too soon!', 'jumped it', 'the green had not even arrived']));
-    if (phase !== 'go') return;
+    if (phase !== 'go' || operation.current || !round.current) return;
 
     // Browser-stamped, on the performance timeline. Falls back only if the
     // UA gives an epoch value (very old Safari).
@@ -232,11 +251,18 @@ export default function Page() {
 
     if (!greenAt.current) return foul(pick(['that was before the green', 'you beat the paint to it', 'the pad had not lit yet']));
     const ms = +(ts - greenAt.current).toFixed(1);
-    if (!trusted) { round.current && sendFoul('robot tap'); setLast({ ms, note: ROBOT_NOTES[Math.min(cheatPresses, ROBOT_NOTES.length - 1)] }); return setPhase('foul'); }
-    submit(ms);
+    if (!trusted) return foul('Synthetic tap detected.');
+    settle(round.current, { reportedMs: ms });
   };
 
   const wipe = () => {
+    generation.current += 1;
+    operation.current = false;
+    round.current = null;
+    retry.current = null;
+    aborted.current = false;
+    setError(null);
+    setShowBoard(false);
     setTimes([]); setVoids(0); setLost(0); setCert(null); setLast(null);
     setSynthetic(false); setFocusLost(false); setSessionId(null); setCheatPresses(0);
   };
@@ -246,11 +272,14 @@ export default function Page() {
      name screen when we do not, or when opening one failed — the error has
      nowhere else to render. */
   const again = async () => {
+    if (operation.current) return;
     wipe();
+    const version = generation.current;
     const remembered = (name || readName()).trim();
     if (!remembered) return setPhase('name');
     setName(remembered);
-    if (!(await start(remembered))) setPhase('name');
+    const started = await start(remembered);
+    if (!started && version === generation.current) setPhase('name');
   };
 
   const changePlayer = () => {
@@ -271,10 +300,9 @@ export default function Page() {
         <div className="mark">reflex bench</div>
         <h1>Five rounds. Median wins.</h1>
         <p className="dim">
-          Two ways to play. Be genuinely quick, or convince the bench that
-          you are. Fastest honest thumbs take the top of the board. Everyone
-          caught trying it on lands in the wall of shame just underneath,
-          which is every bit as public.
+          Wait for green, then tap. Your median over five rounds goes on the
+          leaderboard if it passes the timing and input checks. Passing checks
+          does not prove a human played. Unranked results are also public.
         </p>
         <div style={{ marginTop: '2rem' }}>
           <input
@@ -296,6 +324,8 @@ export default function Page() {
   }
 
   const padText =
+    phase === 'settling' ? 'settling…' :
+    phase === 'submitting' ? 'saving…' :
     phase === 'go' ? 'NOW!' :
     phase === 'wait' ? 'wait for it…' :
     phase === 'foul' ? (last?.note || 'void') :
@@ -311,7 +341,7 @@ export default function Page() {
           {name && (
             <button className="linkish" onClick={changePlayer}>not {name}?</button>
           )}
-          <button className="linkish" onClick={() => setShowBoard((s) => !s)}>
+          <button className="linkish" disabled={['wait', 'go', 'settling', 'submitting'].includes(phase)} onClick={() => setShowBoard((s) => !s)}>
             {showBoard ? 'back to the pad' : 'leaderboard'}
           </button>
         </span>
@@ -325,7 +355,7 @@ export default function Page() {
             onPointerDown={tap}
             role="button"
             tabIndex={0}
-            onKeyDown={(e) => e.key === ' ' && tap(e)}
+            onKeyDown={(e) => (e.key === ' ' || e.key === 'Enter') && tap(e)}
           >
             <div className="read">{padText}</div>
             {phase === 'shown' && last.note && (
@@ -347,6 +377,12 @@ export default function Page() {
             })}
           </div>
 
+          {phase === 'error' && (
+            <div>
+              {retry.current && <button className="primary" onClick={() => retry.current?.()}>Retry saving</button>}
+              <button className="ghost" onClick={again}>Start a new session</button>
+            </div>
+          )}
           {phase === 'done' && cert && <Cert cert={cert} onAgain={again} />}
 
           <Integrity
@@ -367,11 +403,11 @@ export default function Page() {
 function Integrity({ times, voids, lost, synthetic, patchedTimer, focusLost }) {
   const sd = times.length >= 2 ? stdev(times) : null;
   const rows = [
-    ['the green', 'unguessable', true],
-    ['fingers', synthetic ? 'suspiciously robotic' : 'real ones', !synthetic],
+    ['the green', 'server-timed', true],
+    ['fingers', synthetic ? 'suspiciously robotic' : 'no synthetic input reported', !synthetic],
     ['clocks', patchedTimer ? 'bent' : 'straight', !patchedTimer],
     ['attention', focusLost ? 'wandered off' : 'on the pad', !focusLost],
-    ['human wobble', sd == null ? '—' : `${sd.toFixed(1)} ms`, sd == null || sd >= SD_FLOOR],
+    ['human wobble', sd == null ? '—' : `${sd.toFixed(1)} ms`, true],
     ['itchy taps', String(voids), voids <= 8],
     // Only worth a line when it has actually happened to you.
     ...(lost > 0 ? [['eaten by the wire', `${lost} — not counted`, true]] : []),
@@ -398,7 +434,7 @@ const shareUrl = (cert) => {
 
   let text;
   if (clean) {
-    text = `Median ${ms}ms over five rounds on the reflex bench (best ${cert.best.toFixed(1)}ms). Verified, which is the hard part.`;
+    text = `Median ${ms}ms over five rounds on the reflex bench (best ${cert.best.toFixed(1)}ms). Passed integrity checks.`;
   } else if (flags.length > 1) {
     const others = flags.length - 1;
     text = `${ms}ms on the reflex bench, thrown out for "${flags[0]}" and ${others} other ${others === 1 ? 'reason' : 'reasons'}.`;
@@ -421,9 +457,10 @@ function Cert({ cert, onAgain }) {
           <div className="big">{cert.median.toFixed(1)}<span className="unit"> ms</span></div>
         </div>
         <div className="small" style={{ fontFamily: 'var(--mono)', color: clean ? 'var(--go)' : 'var(--foul)' }}>
-          {clean ? 'legit' : 'busted'}
+          {clean ? 'passed checks' : 'not ranked'}
         </div>
       </div>
+      <p className="dim small">Timing and input checks cannot prove human play.</p>
       {cert.flags?.map((f) => (
         <div key={f} className="small" style={{ marginTop: '0.5rem', color: 'var(--foul)' }}>— {f}</div>
       ))}
@@ -437,7 +474,7 @@ function Cert({ cert, onAgain }) {
       </button>
       <a className="ghost-link" style={{ marginTop: '0.5rem' }}
         href={shareUrl(cert)} target="_blank" rel="noopener noreferrer">
-        {clean ? 'Post it to X' : 'Post the charge sheet to X'}
+        {clean ? 'Post it to X' : 'Post result to X'}
       </a>
     </div>
   );
@@ -461,7 +498,7 @@ function Board({ board }) {
       {rejected.length > 0 && (
         <>
           <div className="small" style={{ marginTop: '1.5rem', color: 'var(--foul)' }}>
-            Wall of shame — nobody gets quietly deleted
+            Unranked sessions — checks did not pass
           </div>
           {rejected.map((b, i) => (
             <div key={i} style={{ padding: '0.6rem 0', borderBottom: '1px solid var(--line)' }}>

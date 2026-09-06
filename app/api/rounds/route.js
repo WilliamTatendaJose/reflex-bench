@@ -1,67 +1,47 @@
 import crypto from 'node:crypto';
-import { q } from '@/lib/db';
+import { transaction } from '@/lib/db';
 import { mintGoToken } from '@/lib/sign';
 import { L } from '@/lib/checks';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 15; // the longest hold is 4.3s; 15 is headroom
+export const maxDuration = 15;
 
-/**
- * The whole point of this route: the client asks for a round and the
- * server simply does not answer until the green should appear. The delay
- * never crosses the wire, so it cannot be pre-computed and a tap cannot
- * be scheduled against it. The client's clock starts when this response
- * lands.
- */
 export async function POST(req) {
   let body;
   try { body = await req.json(); } catch { body = {}; }
-  const sessionId = String(body.sessionId || '');
-
-  const { rows: [s] } = await q(
-    `select id, status from sessions where id = $1`,
-    [sessionId]
-  ).catch(() => ({ rows: [] }));
-
-  if (!s) return Response.json({ error: 'Unknown session.' }, { status: 404 });
-  if (s.status !== 'open')
-    return Response.json({ error: 'Session already closed.' }, { status: 409 });
-
-  /* Two counts, not one. `idx` has to keep numbering every round or the
-     unique(session_id, idx) constraint collides, but the attempt budget
-     only charges rounds the player is answerable for — a round the network
-     ate should not cost them one of their goes.
-
-     MAX_ATTEMPTS is the backstop: forgiving network voids without any
-     ceiling would let a client farm unlimited attempts by sitting on its
-     results until the wire check fires. */
-  const { rows: [c] } = await q(
-    `select count(*)::int as total,
-            count(*) filter (where fault is distinct from 'network')::int as charged
-       from rounds where session_id = $1`,
-    [sessionId]
-  );
-  if (c.charged >= L.MAX_ROUNDS || c.total >= L.MAX_ATTEMPTS)
-    return Response.json({ error: 'Round limit reached for this session.' }, { status: 409 });
+  const sessionId = String(body?.sessionId || '');
+  if (!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sessionId))
+    return Response.json({ error: 'Unknown session.' }, { status: 404 });
 
   const delay = L.DELAY_MIN + crypto.randomInt(L.DELAY_MAX - L.DELAY_MIN);
-  await new Promise((r) => setTimeout(r, delay));
-
-  /* Stamp AFTER the insert. Anything before this point — including however
-     long Postgres took to accept the row — is the bench's own latency, and
-     charging it to the player's wire budget is what made a remote database
-     eat into their allowance. The token carries the authoritative instant;
-     go_sent_at is corrected to match when the result lands. */
-  const { rows: [r] } = await q(
-    `insert into rounds (session_id, idx, delay_ms, go_sent_at)
-     values ($1, $2, $3, now()) returning id`,
-    [sessionId, c.total, delay]
-  );
+  // Serialize allocation on the session, then release the connection before waiting.
+  const reserved = await transaction(async (q) => {
+    const { rows: [s] } = await q('select status from sessions where id=$1 for update', [sessionId]);
+    if (!s) return { error: 'Unknown session.', code: 404 };
+    if (s.status !== 'open') return { error: 'Session already closed.', code: 409 };
+    // A disconnected client must not leave a session locked forever.
+    await q(`update rounds set status='void', fault='network', note='Round expired.', result_at=now()
+      where session_id=$1 and status='pending'
+        and go_sent_at < now() - ($2 * interval '1 millisecond')`,
+      [sessionId, L.TOKEN_TTL + L.DELAY_MAX + 15000]);
+    const { rows: [c] } = await q(`select count(*)::int as total,
+      count(*) filter (where fault is distinct from 'network')::int as charged,
+      count(*) filter (where status='pending')::int as pending,
+      count(*) filter (where status='valid')::int as valid
+      from rounds where session_id=$1`, [sessionId]);
+    if (c.pending) return { error: 'Finish the active round first.', code: 409 };
+    if (c.valid >= L.ROUNDS) return { error: 'All five rounds are complete.', code: 409 };
+    if (c.charged >= L.MAX_ROUNDS || c.total >= L.MAX_ATTEMPTS)
+      return { error: 'Round limit reached for this session.', code: 409 };
+    const { rows: [r] } = await q(`insert into rounds (session_id, idx, delay_ms, go_sent_at)
+      values ($1, $2, $3, now()) returning id`, [sessionId, c.total, delay]);
+    return r;
+  });
+  if (reserved.error) return Response.json({ error: reserved.error }, { status: reserved.code });
+  // Neither the reserved row nor the delay is exposed before the wait elapses.
+  await new Promise((resolve) => setTimeout(resolve, delay));
   const goSentAt = Date.now();
-
-  return Response.json(
-    { roundId: r.id, goToken: mintGoToken(r.id, goSentAt) },
-    { headers: { 'Cache-Control': 'no-store' } }
-  );
+  return Response.json({ roundId: reserved.id, goToken: mintGoToken(reserved.id, goSentAt) },
+    { headers: { 'Cache-Control': 'no-store' } });
 }

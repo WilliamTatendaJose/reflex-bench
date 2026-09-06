@@ -29,79 +29,52 @@ Note the round endpoint holds a request open for up to 4.3 seconds
 (`maxDuration = 15`). That is inside the Hobby plan's limit, but it does
 mean a round costs a held function invocation.
 
-## Why 1ms scores happen elsewhere, and not here
+## Integrity checks and their limits
 
-Anything that reaches your eye through the display cannot beat one frame —
-16.7ms at 60Hz. Add retinal transduction, visual cortex, and the motor
-path, and human simple reaction time floors out around 150ms, with 200–250ms
-being normal. A sub-16ms score never travelled through the screen at all.
+Scores under 100ms are excluded by policy. Readings under 130ms prevent a
+session from ranking. These are game thresholds, not proof of cheating.
+Consistency and matching readings are descriptive only: five samples do
+not establish whether a person or a script played.
 
-Three things usually produce one:
+The server chooses the hidden delay, signs each go-token, and compares the
+reported reaction interval with elapsed server time. A script can still
+wait and submit plausible readings. “Passed checks” does not mean verified
+human play. The internal `verified` status is retained for compatibility.
 
-1. Posting straight to the leaderboard API with no server validation.
-2. Hooking the state change in-page so the "tap" fires in the same JS task
-   the green is set, before any paint.
-3. Knowing the delay and scheduling a tap against it.
+Browser-reported synthetic input, timer changes, and focus loss can prevent
+ranking, but their absence proves nothing. Unranked results are public and
+are not labelled as proven cheats.
 
-## What actually binds
+## Round lifecycle and recovery
 
-**Server-only state — a client cannot touch these:**
+Round allocation locks the session row in a short transaction and reserves
+one pending round before waiting. Results and finishing take the same lock.
+No database connection is held during the random delay. Expired pending
+attempts are eventually voided as network failures when another is requested.
 
-- The delay before green is chosen server-side and **never sent to the
-  browser**. `POST /api/rounds` simply does not respond until green is due.
-  Nothing to schedule against.
-- Every go carries an HMAC-signed, single-use token. Results for rounds
-  that were never started are rejected before the database is touched.
-  This is what kills the curl-the-endpoint attack.
-- `server_elapsed_ms` is measured go-release to result-arrival, entirely on
-  the server. A client that waits and then lies about a fast reading gets
-  caught by the gap.
+The client blocks overlapping attempts and ignores responses from sessions
+that have been left. Result and finish requests are idempotent: retrying after
+a lost response returns the stored outcome without changing the score.
+If a round-opening response is lost, start a new session; its missing go-token
+cannot be reconstructed by the browser. “Retry saving” preserves a known
+round's original payload. A retry that first arrives after expiry is voided.
 
-**Physiology, not code:**
+Network voids do not consume the 14 charged attempts; 30 total attempts cap
+a session. The wire budget is 450ms and can exclude honest readings on slow
+connections. Names are public labels, not authenticated identities. Session
+creation is limited to 25 per IP hash per hour.
 
-- Nothing under 100ms is a reaction. Rejected outright. 100–130ms is
-  allowed but flags the session.
-- Five samples from one nervous system have spread. Standard deviation
-  under 8ms is flagged as machine-like.
-- Median of five, not best of N. A single injected sample cannot move a
-  median.
+Leaderboard selection finds each name's best score, then ranks all names
+before taking the first 50. Existing historical scores are not rescored.
 
-**Advisory — the browser's own evidence:**
+## Tests
 
-`isTrusted` on the tap, native-function tripwires on `performance.now`,
-`Date.now`, and `dispatchEvent`, and focus loss during a round. A
-determined cheat suppresses all of these, so their *absence* proves
-nothing. Their *presence* is treated as evidence and flags the session.
-
-## What this does not claim
-
-Cheating is not prevented. It is made unrewarding.
-
-The reaction interval has to be measured client-side, because the server is
-a network hop away and that hop is larger and noisier than the thing being
-measured. So the ceiling on cheating is this: a script that waits a
-human-plausible interval and reports a human-plausible spread across five
-rounds will pass. That script scores maybe 140ms — elite, but possible. The
-board is bounded by physiology instead of by imagination, which is the
-whole goal. Anyone claiming more than that is overselling.
-
-Two known soft spots, stated up front:
-
-- **Wire-time slack is 450ms.** Wide enough that a bad mobile connection is
-  not called fraud, which also means it will not catch a cheat shaving
-  30ms. Tighten `L.WIRE_SLACK` in `lib/checks.js` if your users are all on
-  good connections, and watch the false-reject rate.
-
-  A round voided this way is recorded as `fault = 'network'` and is held
-  against nobody: it is not counted as a false start when the session is
-  scored, and it does not spend one of the player's `MAX_ROUNDS` attempts.
-  `MAX_ATTEMPTS` is the ceiling that stops a client farming attempts by
-  tripping the wire check on purpose. Before tuning the slack, check where
-  the function and the database are running — the round trip to a Postgres
-  in another region comes out of the same budget.
-- **Session retries are unlimited by name.** Rate limiting is per IP hash,
-  25 sessions/hour. Someone patient can fish for a good median the same way
-  an honest player can. That is a fairness choice, not an oversight.
+`npm test` runs validation and API/SQL regressions using embedded PostgreSQL
+(PGlite). Transaction serialization is exercised locally; this does not replace
+a multi-connection PostgreSQL deployment test. `npm run test:e2e` runs browser
+regressions with mocked API responses (install Chromium using
+`npx playwright install chromium` first). `npm run build` checks production
+compilation. Browser mocks do not verify live PostgreSQL or deployment setup.
 
 ## Layout
 
