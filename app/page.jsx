@@ -11,6 +11,32 @@ const isNative = (fn) => {
   catch { return false; }
 };
 const pick = (a) => a[Math.floor(Math.random() * a.length)];
+
+/* The cheat button is the one joke a player can repeat on purpose, so it
+   answers differently each time and eventually stops playing along. The
+   session was already flagged on the first press — that is the point of
+   the gag, that pressing it again achieves nothing. */
+const CHEAT_LABELS = [
+  'Cheat button. Go on, we dare you.',
+  'Again, then.',
+  'Still no.',
+  'You will wear it out.',
+  'This is being written down.',
+  'It is still being written down.',
+  'Nothing here is going to change.',
+  'One more and I stop humouring you.',
+];
+const CHEAT_RETIRED = 'Cheat button (retired, on grounds of persistence)';
+const ROBOT_NOTES = [
+  'nice try, robot',
+  'that one was a script as well',
+  'we can tell. every time.',
+  'we can do this all day',
+  'you are only making the list longer',
+  'the flag went up several taps ago',
+  'yes. still a script.',
+  'that is quite enough of that',
+];
 const stdev = (a) => {
   if (a.length < 2) return 0;
   const m = a.reduce((s, x) => s + x, 0) / a.length;
@@ -31,6 +57,7 @@ export default function Page() {
 
   // advisory client-side evidence, sent with the session
   const [synthetic, setSynthetic] = useState(false);
+  const [cheatPresses, setCheatPresses] = useState(0);
   const [focusLost, setFocusLost] = useState(false);
   const [patchedTimer] = useState(
     () => !(isNative(performance.now) && isNative(Date.now) &&
@@ -155,7 +182,7 @@ export default function Page() {
   const tap = (e) => {
     const ne = e.nativeEvent || e;
     const trusted = ne.isTrusted === true;
-    if (!trusted) setSynthetic(true);
+    if (!trusted) { setSynthetic(true); setCheatPresses((n) => n + 1); }
 
     if (phase === 'ready' || phase === 'shown') { if (trusted) arm(); return; }
     if (phase === 'foul') { if (trusted) setPhase('ready'); return; }
@@ -170,13 +197,13 @@ export default function Page() {
 
     if (!greenAt.current) return foul(pick(['that was before the green', 'you beat the paint to it', 'the pad had not lit yet']));
     const ms = +(ts - greenAt.current).toFixed(1);
-    if (!trusted) { round.current && sendFoul('robot tap'); setLast({ ms, note: pick(['nice try, robot', 'that tap came from a script and we can tell', 'the browser grassed you up']) }); return setPhase('foul'); }
+    if (!trusted) { round.current && sendFoul('robot tap'); setLast({ ms, note: ROBOT_NOTES[Math.min(cheatPresses, ROBOT_NOTES.length - 1)] }); return setPhase('foul'); }
     submit(ms);
   };
 
   const again = () => {
     setTimes([]); setVoids(0); setCert(null); setLast(null);
-    setSynthetic(false); setFocusLost(false); setSessionId(null);
+    setSynthetic(false); setFocusLost(false); setSessionId(null); setCheatPresses(0);
     setPhase('name');
   };
 
@@ -269,8 +296,9 @@ export default function Page() {
             synthetic={synthetic} patchedTimer={patchedTimer} focusLost={focusLost}
           />
 
-          <button className="ghost" style={{ marginTop: '1rem' }} onClick={fakeTap}>
-            Cheat button. Go on, we dare you.
+          <button className="ghost" style={{ marginTop: '1rem' }} onClick={fakeTap}
+            disabled={cheatPresses >= CHEAT_LABELS.length}>
+            {cheatPresses >= CHEAT_LABELS.length ? CHEAT_RETIRED : CHEAT_LABELS[cheatPresses]}
           </button>
         </>
       )}

@@ -51,6 +51,7 @@ button:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 .primary { background: var(--brass); color: var(--base); font-weight: 600; }
 .primary:disabled { opacity: 0.3; cursor: default; }
 .ghost { background: transparent; border: 1px dashed var(--line); color: var(--dim); font-size: 0.75rem; padding: 0.55rem; }
+.ghost:disabled { opacity: 0.35; cursor: default; border-style: dotted; }
 .linkish { background: none; width: auto; padding: 0; color: var(--dim); font-size: 0.75rem; text-decoration: underline; }
 
 .pad {
