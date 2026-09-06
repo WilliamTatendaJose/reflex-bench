@@ -328,6 +328,29 @@ function Integrity({ times, voids, synthetic, patchedTimer, focusLost }) {
   );
 }
 
+/* X counts a URL as 23 characters however long it is, so the sentence gets
+   a budget rather than the whole 280. Flags are player-visible text of
+   unknown length, hence the trim. */
+const shareUrl = (cert) => {
+  const clean = cert.status === 'verified';
+  const flags = cert.flags || [];
+  const ms = cert.median.toFixed(1);
+
+  let text;
+  if (clean) {
+    text = `Median ${ms}ms over five rounds on the reflex bench (best ${cert.best.toFixed(1)}ms). Verified, which is the hard part.`;
+  } else if (flags.length > 1) {
+    const others = flags.length - 1;
+    text = `${ms}ms on the reflex bench, thrown out for "${flags[0]}" and ${others} other ${others === 1 ? 'reason' : 'reasons'}.`;
+  } else {
+    text = `${ms}ms on the reflex bench, thrown out for "${flags[0] || 'reasons it declined to elaborate on'}".`;
+  }
+
+  const origin = typeof window === 'undefined' ? '' : window.location.origin;
+  return `https://x.com/intent/post?text=${encodeURIComponent(text.slice(0, 240))}` +
+         (origin ? `&url=${encodeURIComponent(origin)}` : '');
+};
+
 function Cert({ cert, onAgain }) {
   const clean = cert.status === 'verified';
   return (
@@ -347,6 +370,10 @@ function Cert({ cert, onAgain }) {
       <button className="primary" style={{ marginTop: '1rem' }} onClick={onAgain}>
         Go again
       </button>
+      <a className="ghost-link" style={{ marginTop: '0.5rem' }}
+        href={shareUrl(cert)} target="_blank" rel="noopener noreferrer">
+        {clean ? 'Post it to X' : 'Post the charge sheet to X'}
+      </a>
     </div>
   );
 }

@@ -52,6 +52,13 @@ button:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 .primary:disabled { opacity: 0.3; cursor: default; }
 .ghost { background: transparent; border: 1px dashed var(--line); color: var(--dim); font-size: 0.75rem; padding: 0.55rem; }
 .ghost:disabled { opacity: 0.35; cursor: default; border-style: dotted; }
+.ghost-link {
+  display: block; box-sizing: border-box; width: 100%; text-align: center;
+  text-decoration: none; font: inherit; font-size: 0.75rem; cursor: pointer;
+  border-radius: 4px; padding: 0.55rem;
+  background: transparent; border: 1px dashed var(--line); color: var(--dim);
+}
+.ghost-link:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 .linkish { background: none; width: auto; padding: 0; color: var(--dim); font-size: 0.75rem; text-decoration: underline; }
 
 .pad {
